@@ -68,6 +68,8 @@ if(ENABLE_UNITY_BUILD)
 		message(WARNING "ENABLE_UNITY_BUILD requires CMake 3.16 or newer; continuing without unity build")
 	else()
 		set_source_files_properties(
+			# These OTB implementations have overlapping private helper names.
+			"${CMAKE_CURRENT_SOURCE_DIR}/source/items_otb_id_converter.cpp"
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/gl_renderer.cpp"
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/post_process_renderer.cpp"
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/spawn_format_map.cpp"
@@ -693,4 +695,16 @@ if(BUILD_TESTING)
 		RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/palette_toolbar_tests"
 	)
 	add_test(NAME palette_toolbar_tests COMMAND palette_toolbar_tests)
+
+	# Release tests must execute their assertions, including calls inside assert().
+	get_property(build_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+	foreach(test_target IN LISTS build_targets)
+		if(test_target MATCHES "_tests$")
+			if(MSVC)
+				target_compile_options(${test_target} PRIVATE /UNDEBUG)
+			else()
+				target_compile_options(${test_target} PRIVATE -UNDEBUG)
+			endif()
+		endif()
+	endforeach()
 endif()

@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - master
     tags:
       - "v*"
     paths:
@@ -78,6 +79,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Configure MSVC for ${{ matrix.arch }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Identify compiler cache namespace
+        id: toolchain
+        shell: pwsh
+        run: |
+          "version=$env:VCToolsVersion" >> $env:GITHUB_OUTPUT
+
       - name: Restore vcpkg caches
         id: vcpkg-cache
         uses: actions/cache/restore@v4
@@ -85,7 +97,26 @@ jobs:
           path: |
             vcpkg-binary-cache/${{ matrix.arch }}
             vcpkg-downloads/${{ matrix.arch }}
-          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('vcpkg.json') }}
+
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.toolchain.outputs.version }}-
+            vcpkg-${{ runner.os }}-${{ matrix.triplet }}-
+
+      - name: Initialize diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:BUILD_DIR/diagnostics" | Out-Null
+          @{
+            commit = '${{ github.sha }}'
+            architecture = '${{ matrix.arch }}'
+            runnerImage = $env:ImageVersion
+            vcpkgBaseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+            dependencyCacheHit = '${{ steps.vcpkg-cache.outputs.cache-hit }}'
+          } | ConvertTo-Json | Set-Content "$env:BUILD_DIR/diagnostics/environment.json"
+          "### Windows ${{ matrix.arch }} build stages" >> $env:GITHUB_STEP_SUMMARY
+          "| Stage | Exit code | Seconds |" >> $env:GITHUB_STEP_SUMMARY
+          "| --- | --- | --- |" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Bootstrap pinned vcpkg
         shell: pwsh
@@ -109,11 +140,6 @@ jobs:
           $binaryCache = Join-Path $env:GITHUB_WORKSPACE "vcpkg-binary-cache\${{ matrix.arch }}"
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
 
-      - name: Configure MSVC for ${{ matrix.arch }}
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc_arch }}
-
       - name: Configure CMake
         shell: pwsh
         run: |
@@ -121,12 +147,13 @@ jobs:
           cmake --version
           ninja --version
 
-          cmake -S . -B $env:BUILD_DIR -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:NEXAMAP_VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} `
-            -DBUILD_TESTING=ON `
-            -DENABLE_UNITY_BUILD=ON
+          & ./cmake/InvokeBuildStage.ps1 configure cmake -CommandArguments @(
+            '-S', '.', '-B', $env:BUILD_DIR, '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            "-DCMAKE_TOOLCHAIN_FILE=$env:NEXAMAP_VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake",
+            '-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}',
+            '-DBUILD_TESTING=ON', '-DENABLE_UNITY_BUILD=ON'
+          )
           if ($LASTEXITCODE -ne 0) {
             throw "CMake configure failed with exit code $LASTEXITCODE."
           }
@@ -138,12 +165,12 @@ jobs:
           path: |
             vcpkg-binary-cache/${{ matrix.arch }}
             vcpkg-downloads/${{ matrix.arch }}
-          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build Release
         shell: pwsh
         run: |
-          cmake --build $env:BUILD_DIR --config Release --parallel $env:NUMBER_OF_PROCESSORS
+          & ./cmake/InvokeBuildStage.ps1 build cmake -CommandArguments @('--build', $env:BUILD_DIR, '--config', 'Release', '--parallel', $env:NUMBER_OF_PROCESSORS)
           if ($LASTEXITCODE -ne 0) {
             throw "Build failed with exit code $LASTEXITCODE."
           }
@@ -151,7 +178,7 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: |
-          ctest --test-dir $env:BUILD_DIR --build-config Release --output-on-failure
+          & ./cmake/InvokeBuildStage.ps1 test ctest -CommandArguments @('--test-dir', $env:BUILD_DIR, '--build-config', 'Release', '--output-on-failure', '--parallel', $env:NUMBER_OF_PROCESSORS, '--timeout', '120', '--no-tests=error', '--output-junit', "$env:BUILD_DIR/diagnostics/tests.xml")
           if ($LASTEXITCODE -ne 0) {
             throw "Tests failed with exit code $LASTEXITCODE."
           }
@@ -159,7 +186,7 @@ jobs:
       - name: Install runtime package
         shell: pwsh
         run: |
-          cmake --install $env:BUILD_DIR --config Release --prefix $env:PACKAGE_DIR
+          & ./cmake/InvokeBuildStage.ps1 install cmake -CommandArguments @('--install', $env:BUILD_DIR, '--config', 'Release', '--prefix', $env:PACKAGE_DIR)
           if ($LASTEXITCODE -ne 0) {
             throw "CMake install failed with exit code $LASTEXITCODE."
           }
@@ -212,6 +239,21 @@ jobs:
               throw "Runtime dependency is missing from the package and Windows: $dependency"
             }
           }
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-${{ matrix.arch }}-diagnostics
+          path: |
+            ${{ env.BUILD_DIR }}/diagnostics/
+            ${{ env.BUILD_DIR }}/CMakeCache.txt
+            ${{ env.BUILD_DIR }}/CMakeFiles/CMakeConfigureLog.yaml
+            ${{ env.BUILD_DIR }}/Testing/Temporary/
+            ${{ env.BUILD_DIR }}/vcpkg-manifest-install.log
+            .vcpkg/buildtrees/**/*.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload ${{ matrix.arch }} artifact
         uses: actions/upload-artifact@v4
