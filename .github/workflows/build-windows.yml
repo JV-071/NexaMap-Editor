@@ -141,6 +141,7 @@ jobs:
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
 
       - name: Configure CMake
+        id: configure
         shell: pwsh
         run: |
           cl 2>&1 | Select-Object -First 3
@@ -159,7 +160,7 @@ jobs:
           }
 
       - name: Save vcpkg caches
-        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.configure.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
