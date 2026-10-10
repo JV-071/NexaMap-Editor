@@ -11,6 +11,12 @@ reuse. Only successful configuration saves a new cache, preventing an incomplete
 dependency install from occupying an immutable exact key. Build directories,
 executables and test results are never restored from this dependency cache.
 
+C/C++ object compilation uses the pinned Mozilla sccache release with GitHub
+Actions storage. Cache keys account for compiler inputs; compiler options and
+source semantics are preserved. Server communication failures fall back to the
+compiler. The diagnostics artifact includes hit/miss statistics. Linking, tests
+and package validation still execute on every run.
+
 Tests run in parallel, with their existing individual timeouts and a 120-second
 default. Assertions remain active in test executables even in Release. The
 editor itself retains normal Release compilation options.

@@ -72,6 +72,8 @@ jobs:
       VCPKG_DOWNLOADS: ${{ github.workspace }}\vcpkg-downloads\${{ matrix.arch }}
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-binary-cache\${{ matrix.arch }},readwrite
       VCPKG_FEATURE_FLAGS: manifests,binarycaching
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
     steps:
       - name: Check out source
@@ -140,6 +142,11 @@ jobs:
           $binaryCache = Join-Path $env:GITHUB_WORKSPACE "vcpkg-binary-cache\${{ matrix.arch }}"
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
 
+      - name: Set up compiler cache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
+        with:
+          version: "v0.16.0"
+
       - name: Configure CMake
         id: configure
         shell: pwsh
@@ -153,6 +160,8 @@ jobs:
             '-DCMAKE_BUILD_TYPE=Release',
             "-DCMAKE_TOOLCHAIN_FILE=$env:NEXAMAP_VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake",
             '-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}',
+            '-DCMAKE_C_COMPILER_LAUNCHER=sccache',
+            '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache',
             '-DBUILD_TESTING=ON', '-DENABLE_UNITY_BUILD=ON'
           )
           if ($LASTEXITCODE -ne 0) {
@@ -241,6 +250,14 @@ jobs:
             }
           }
 
+      - name: Record compiler cache statistics
+        if: always()
+        shell: pwsh
+        run: |
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            & ./cmake/InvokeBuildStage.ps1 compiler-cache sccache -CommandArguments @('--show-stats')
+          }
+
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -254,6 +271,7 @@ jobs:
             ${{ env.BUILD_DIR }}/vcpkg-manifest-install.log
             .vcpkg/buildtrees/**/*.log
           if-no-files-found: warn
+          include-hidden-files: true
           retention-days: 7
 
       - name: Upload ${{ matrix.arch }} artifact
