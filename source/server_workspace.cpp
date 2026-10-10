@@ -662,6 +662,7 @@ ServerDetectionResult ServerResourceDetector::Detect(const std::filesystem::path
 		workspace.npcsDirectory = FirstExistingDirectory(root, npcDirectories);
 	}
 
+	const bool fallbackItemsXml = workspace.itemsXmlPath.empty();
 	std::deque<QueueEntry> queue;
 	queue.push_back({ root, 0 });
 	TraceServerScan(options, "Starting bounded resource scan", root);
@@ -703,6 +704,15 @@ ServerDetectionResult ServerResourceDetector::Detect(const std::filesystem::path
 				workspace.npcsDirectory = Normalize(entry.path());
 			}
 			queue.push_back({ entry.path(), current.depth + 1 });
+		}
+	}
+
+	// A web/client items.xml found earlier in the fallback walk must not
+	// override the metadata accompanying the selected server item database.
+	if (fallbackItemsXml && !workspace.itemsOtbPath.empty()) {
+		const std::filesystem::path siblingXml = workspace.itemsOtbPath.parent_path() / "items.xml";
+		if (IsServerWorkspaceFile(siblingXml)) {
+			workspace.itemsXmlPath = Normalize(siblingXml);
 		}
 	}
 
