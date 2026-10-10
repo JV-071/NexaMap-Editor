@@ -146,7 +146,7 @@ jobs:
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
 
       - name: Set up compiler cache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
+        uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: "v0.16.0"
 
@@ -290,10 +290,26 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  resource-discovery:
+    name: Server resource discovery (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test case-sensitive resource discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -pedantic -Isource tests/server_workspace_tests.cpp source/server_workspace.cpp -o server_workspace_tests
+          ./server_workspace_tests
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, resource-discovery]
     runs-on: ubuntu-latest
     permissions:
       contents: write

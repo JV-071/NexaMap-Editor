@@ -710,9 +710,11 @@ ServerDetectionResult ServerResourceDetector::Detect(const std::filesystem::path
 	// A web/client items.xml found earlier in the fallback walk must not
 	// override the metadata accompanying the selected server item database.
 	if (fallbackItemsXml && !workspace.itemsOtbPath.empty()) {
-		const std::filesystem::path siblingXml = workspace.itemsOtbPath.parent_path() / "items.xml";
-		if (IsServerWorkspaceFile(siblingXml)) {
-			workspace.itemsXmlPath = Normalize(siblingXml);
+		for (const auto& entry : SortedEntries(workspace.itemsOtbPath.parent_path())) {
+			if (Lower(ServerPathUtf8(entry.path().filename())) == "items.xml" && IsServerWorkspaceFile(entry.path())) {
+				workspace.itemsXmlPath = Normalize(entry.path());
+				break;
+			}
 		}
 	}
 
