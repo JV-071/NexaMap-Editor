@@ -68,8 +68,9 @@ if(ENABLE_UNITY_BUILD)
 		message(WARNING "ENABLE_UNITY_BUILD requires CMake 3.16 or newer; continuing without unity build")
 	else()
 		set_source_files_properties(
-			# These OTB implementations have overlapping private helper names.
+			# Converter implementations have overlapping private helper names.
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/items_otb_id_converter.cpp"
+			"${CMAKE_CURRENT_SOURCE_DIR}/source/custom_server_converter.cpp"
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/gl_renderer.cpp"
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/post_process_renderer.cpp"
 			"${CMAKE_CURRENT_SOURCE_DIR}/source/spawn_format_map.cpp"
