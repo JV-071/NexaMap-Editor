@@ -4,6 +4,7 @@
 
 #include "copybuffer.h"
 #include "editor.h"
+#include "multiplayer_session.h"
 
 #include <iostream>
 #include <wx/evtloop.h>

@@ -110,16 +110,29 @@ int main() {
 		check(detection.workspace.serverProfile == "TFS", "TFS 1.8 has the stable display label");
 	}
 
-	{
+	for (const char* xmlName : { "items.xml", "Items.XML" }) {
 		TemporaryDirectory server;
 		server.write("html/engine/XML/items.xml", "<items><item id='999'/></items>");
 		server.write("srv/data/items/items.otb");
-		server.write("srv/data/items/items.xml", "<items><item id='100'/></items>");
+		const std::filesystem::path siblingXml = std::filesystem::path("srv/data/items") / xmlName;
+		server.write(siblingXml, "<items><item id='100'/></items>");
 		server.write("srv/data/world/world.otbm");
 		const ServerDetectionResult detection = ServerResourceDetector::Detect(server.path);
 		check(
-			detection.workspace.itemsXmlPath == std::filesystem::weakly_canonical(server.path / "srv/data/items/items.xml"),
-			"items.xml beside the detected items.otb wins over unrelated web/client copies"
+			detection.workspace.itemsXmlPath == std::filesystem::weakly_canonical(server.path / siblingXml),
+			std::string(xmlName) + " beside the detected items.otb wins over unrelated web/client copies"
+		);
+	}
+
+	{
+		TemporaryDirectory server;
+		server.write("data/items/items.xml", "<items><item id='100'/></items>");
+		server.write("srv/data/items/items.otb");
+		server.write("srv/data/items/Items.XML", "<items><item id='999'/></items>");
+		const ServerDetectionResult detection = ServerResourceDetector::Detect(server.path);
+		check(
+			detection.workspace.itemsXmlPath == std::filesystem::weakly_canonical(server.path / "data/items/items.xml"),
+			"fallback sibling XML does not override metadata selected through a known layout"
 		);
 	}
 

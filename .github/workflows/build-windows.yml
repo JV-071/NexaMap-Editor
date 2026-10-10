@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - master
     tags:
       - "v*"
     paths:
@@ -71,12 +72,27 @@ jobs:
       VCPKG_DOWNLOADS: ${{ github.workspace }}\vcpkg-downloads\${{ matrix.arch }}
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-binary-cache\${{ matrix.arch }},readwrite
       VCPKG_FEATURE_FLAGS: manifests,binarycaching
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      SCCACHE_LOG: warn
+      SCCACHE_ERROR_LOG: ${{ github.workspace }}\build-${{ matrix.arch }}\diagnostics\sccache.log
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Configure MSVC for ${{ matrix.arch }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Identify compiler cache namespace
+        id: toolchain
+        shell: pwsh
+        run: |
+          "version=$env:VCToolsVersion" >> $env:GITHUB_OUTPUT
 
       - name: Restore vcpkg caches
         id: vcpkg-cache
@@ -85,7 +101,27 @@ jobs:
           path: |
             vcpkg-binary-cache/${{ matrix.arch }}
             vcpkg-downloads/${{ matrix.arch }}
-          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('vcpkg.json') }}
+
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.toolchain.outputs.version }}-
+            vcpkg-${{ runner.os }}-${{ matrix.triplet }}-
+
+      - name: Initialize diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:BUILD_DIR/diagnostics" | Out-Null
+          @{
+            commit = '${{ github.sha }}'
+            architecture = '${{ matrix.arch }}'
+            runnerImage = $env:ImageVersion
+            compilerToolset = $env:VCToolsVersion
+            vcpkgBaseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+            dependencyCacheHit = '${{ steps.vcpkg-cache.outputs.cache-hit }}'
+          } | ConvertTo-Json | Set-Content "$env:BUILD_DIR/diagnostics/environment.json"
+          "### Windows ${{ matrix.arch }} build stages" >> $env:GITHUB_STEP_SUMMARY
+          "| Stage | Exit code | Seconds |" >> $env:GITHUB_STEP_SUMMARY
+          "| --- | --- | --- |" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Bootstrap pinned vcpkg
         shell: pwsh
@@ -109,41 +145,45 @@ jobs:
           $binaryCache = Join-Path $env:GITHUB_WORKSPACE "vcpkg-binary-cache\${{ matrix.arch }}"
           New-Item -ItemType Directory -Force $binaryCache | Out-Null
 
-      - name: Configure MSVC for ${{ matrix.arch }}
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up compiler cache
+        uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
-          arch: ${{ matrix.msvc_arch }}
+          version: "v0.16.0"
 
       - name: Configure CMake
+        id: configure
         shell: pwsh
         run: |
           cl 2>&1 | Select-Object -First 3
           cmake --version
           ninja --version
 
-          cmake -S . -B $env:BUILD_DIR -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:NEXAMAP_VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} `
-            -DBUILD_TESTING=ON `
-            -DENABLE_UNITY_BUILD=ON
+          & ./cmake/InvokeBuildStage.ps1 configure cmake -CommandArguments @(
+            '-S', '.', '-B', $env:BUILD_DIR, '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Release',
+            "-DCMAKE_TOOLCHAIN_FILE=$env:NEXAMAP_VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake",
+            '-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}',
+            '-DCMAKE_C_COMPILER_LAUNCHER=sccache',
+            '-DCMAKE_CXX_COMPILER_LAUNCHER=sccache',
+            '-DBUILD_TESTING=ON', '-DENABLE_UNITY_BUILD=ON'
+          )
           if ($LASTEXITCODE -ne 0) {
             throw "CMake configure failed with exit code $LASTEXITCODE."
           }
 
       - name: Save vcpkg caches
-        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: steps.configure.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
             vcpkg-binary-cache/${{ matrix.arch }}
             vcpkg-downloads/${{ matrix.arch }}
-          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Build Release
         shell: pwsh
         run: |
-          cmake --build $env:BUILD_DIR --config Release --parallel $env:NUMBER_OF_PROCESSORS
+          & ./cmake/InvokeBuildStage.ps1 build cmake -CommandArguments @('--build', $env:BUILD_DIR, '--config', 'Release', '--parallel', $env:NUMBER_OF_PROCESSORS)
           if ($LASTEXITCODE -ne 0) {
             throw "Build failed with exit code $LASTEXITCODE."
           }
@@ -151,15 +191,19 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: |
-          ctest --test-dir $env:BUILD_DIR --build-config Release --output-on-failure
+          $report = Join-Path $env:GITHUB_WORKSPACE "$env:BUILD_DIR/diagnostics/tests.xml"
+          & ./cmake/InvokeBuildStage.ps1 test ctest -CommandArguments @('--test-dir', $env:BUILD_DIR, '--build-config', 'Release', '--output-on-failure', '--parallel', $env:NUMBER_OF_PROCESSORS, '--timeout', '120', '--no-tests=error', '--output-junit', $report)
           if ($LASTEXITCODE -ne 0) {
             throw "Tests failed with exit code $LASTEXITCODE."
+          }
+          if (-not (Test-Path -LiteralPath $report -PathType Leaf)) {
+            throw "CTest did not produce its JUnit report: $report"
           }
 
       - name: Install runtime package
         shell: pwsh
         run: |
-          cmake --install $env:BUILD_DIR --config Release --prefix $env:PACKAGE_DIR
+          & ./cmake/InvokeBuildStage.ps1 install cmake -CommandArguments @('--install', $env:BUILD_DIR, '--config', 'Release', '--prefix', $env:PACKAGE_DIR)
           if ($LASTEXITCODE -ne 0) {
             throw "CMake install failed with exit code $LASTEXITCODE."
           }
@@ -213,6 +257,30 @@ jobs:
             }
           }
 
+      - name: Record compiler cache statistics
+        if: always()
+        shell: pwsh
+        run: |
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            & ./cmake/InvokeBuildStage.ps1 compiler-cache sccache -CommandArguments @('--show-stats')
+          }
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-${{ matrix.arch }}-diagnostics
+          path: |
+            ${{ env.BUILD_DIR }}/diagnostics/
+            ${{ env.BUILD_DIR }}/CMakeCache.txt
+            ${{ env.BUILD_DIR }}/CMakeFiles/CMakeConfigureLog.yaml
+            ${{ env.BUILD_DIR }}/Testing/Temporary/
+            ${{ env.BUILD_DIR }}/vcpkg-manifest-install.log
+            .vcpkg/buildtrees/**/*.log
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 7
+
       - name: Upload ${{ matrix.arch }} artifact
         uses: actions/upload-artifact@v4
         with:
@@ -222,10 +290,26 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  resource-discovery:
+    name: Server resource discovery (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test case-sensitive resource discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O2 -Wall -Wextra -pedantic -Isource tests/server_workspace_tests.cpp source/server_workspace.cpp -o server_workspace_tests
+          ./server_workspace_tests
+
   release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, resource-discovery]
     runs-on: ubuntu-latest
     permissions:
       contents: write
