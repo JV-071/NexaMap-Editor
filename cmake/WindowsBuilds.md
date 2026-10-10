@@ -17,7 +17,8 @@ source semantics are preserved. Server communication failures fall back to the
 compiler. The diagnostics artifact includes hit/miss statistics. Linking, tests
 and package validation still execute on every run.
 
-Tests run in parallel, with their existing individual timeouts and a 120-second
+Full-editor test harnesses share one object library, compiling identical editor
+sources once while retaining separate executables. Tests run in parallel, with their existing individual timeouts and a 120-second
 default. Assertions remain active in test executables even in Release. The
 editor itself retains normal Release compilation options.
 
