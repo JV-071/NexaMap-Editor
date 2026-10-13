@@ -449,7 +449,7 @@ namespace {
 			return map.path == normalized;
 		});
 		if (duplicate == workspace.maps.end()) {
-			workspace.maps.push_back({ normalized, ResourceFingerprint::Read(normalized) });
+			workspace.maps.push_back({ normalized, ResourceFingerprint::Read(normalized), {}, ServerType::UnknownGeneric });
 		}
 	}
 
